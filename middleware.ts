@@ -14,6 +14,12 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
+  // Vercel Cron invokes this without our session cookie; it authenticates
+  // itself with a CRON_SECRET bearer token checked inside the route handler.
+  if (pathname === "/api/cron/weekly-summary") {
+    return NextResponse.next();
+  }
+
   const token = req.cookies.get(SESSION_COOKIE)?.value;
   const identity = token ? await verifySessionToken(token) : null;
 
