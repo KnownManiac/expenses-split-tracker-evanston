@@ -1,13 +1,14 @@
 # Household Expense Tracker
 
-A shared expense tracker for two people (G and B): log expenses manually or by chatting/talking to an AI assistant, split costs equally/by percentage/manually, see a running balance, and export a PDF report.
+A shared expense tracker for two people (G and B): log expenses manually or by chatting/talking/photographing a receipt to an AI assistant, split costs equally/by percentage/manually, see a running balance, and export a PDF report.
 
 ## Stack
 
 - Next.js 15 (App Router, TypeScript) — deploys to Vercel with no extra config
 - Postgres (via `pg`) — works with Vercel's Neon-backed Postgres storage or any Postgres instance
-- Anthropic Claude (`claude-haiku-4-5`) with tool use — parses chat/voice messages into actions
+- Anthropic Claude (`claude-haiku-4-5`) with tool use and vision — parses chat/voice messages and receipt photos into actions, asking a follow-up question when something's ambiguous (e.g. who paid)
 - Browser Web Speech API — free voice-to-text for the mic button (no audio upload/transcription cost)
+- Client-side image compression (`<canvas>`) — receipt photos are downscaled/compressed in the browser before upload, well under Vercel's request size limit
 - `pdf-lib` — generates the PDF report
 - `nodemailer` over Gmail SMTP + Vercel Cron — sends a weekly balance summary email every Saturday
 - PIN-gated session cookie (`jose`) — no user accounts, just a shared PIN + G/B picker

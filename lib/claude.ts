@@ -1,5 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { MessageParam, Tool, ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages";
+import type {
+  ImageBlockParam,
+  MessageParam,
+  TextBlockParam,
+  Tool,
+  ToolResultBlockParam,
+} from "@anthropic-ai/sdk/resources/messages";
 import {
   createExpense,
   deleteExpense,
@@ -152,9 +158,42 @@ async function executeTool(
 export interface ChatResult {
   reply: string;
   pdfReady: boolean;
+  history: MessageParam[];
 }
 
-export async function runChat(userMessage: string, identity: Identity): Promise<ChatResult> {
+export interface ChatTurnInput {
+  text?: string;
+  image?: { mediaType: string; data: string };
+}
+
+const MAX_HISTORY_TURNS = 8;
+
+function isToolResultMessage(message: MessageParam): boolean {
+  return (
+    message.role === "user" &&
+    Array.isArray(message.content) &&
+    message.content.length > 0 &&
+    (message.content[0] as { type?: string }).type === "tool_result"
+  );
+}
+
+// Keeps the most recent MAX_HISTORY_TURNS user turns, always cutting at a
+// genuine new user turn (never inside a tool_use/tool_result exchange).
+function trimHistory(messages: MessageParam[]): MessageParam[] {
+  const turnStarts = messages.reduce<number[]>((acc, message, i) => {
+    if (message.role === "user" && !isToolResultMessage(message)) acc.push(i);
+    return acc;
+  }, []);
+  if (turnStarts.length <= MAX_HISTORY_TURNS) return messages;
+  const cutIndex = turnStarts[turnStarts.length - MAX_HISTORY_TURNS];
+  return messages.slice(cutIndex);
+}
+
+export async function runChat(
+  input: ChatTurnInput,
+  identity: Identity,
+  history: MessageParam[] = []
+): Promise<ChatResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     throw new Error("ANTHROPIC_API_KEY environment variable is not set");
@@ -162,9 +201,23 @@ export async function runChat(userMessage: string, identity: Identity): Promise<
   const anthropic = new Anthropic({ apiKey });
 
   const today = new Date().toISOString().slice(0, 10);
-  const system = `You are the assistant inside a household expense-splitting app shared by two people, G and B. Today's date is ${today}. The person currently chatting with you is ${identity}. When they say "I paid" or "I" without naming who, assume they mean ${identity}. When an expense is split "equally" or they don't specify a split, use split_type "equal". Use tools to actually make changes -- do not just describe what you would do. After using tools, reply with a short, friendly, natural-language confirmation of what happened (include amounts and who owes whom when relevant). Keep replies brief.`;
+  const system = `You are the assistant inside a household expense-splitting app shared by two people, G and B. Today's date is ${today}. The person currently chatting with you is ${identity}. When they say "I paid" or "I" without naming who, assume they mean ${identity}. When an expense is split "equally" or they don't specify a split, use split_type "equal".
 
-  const messages: MessageParam[] = [{ role: "user", content: userMessage }];
+The user can attach a photo of a receipt or bill, sometimes with a caption. Read the total amount and merchant/description off the image. If the caption already says who paid and how to split it, use that directly. If required information is missing or ambiguous (who paid, or how the cost should be split), do NOT guess -- ask ONE short, specific clarifying question in plain text and stop, without calling any tool. Once the user's reply gives you what you need, use it together with the earlier image/receipt details already in this conversation to add the expense.
+
+Use tools to actually make changes -- do not just describe what you would do. After using tools, reply with a short, friendly, natural-language confirmation of what happened (include amounts and who owes whom when relevant). Keep replies brief.`;
+
+  const contentBlocks: Array<TextBlockParam | ImageBlockParam> = [];
+  if (input.image) {
+    contentBlocks.push({
+      type: "image",
+      source: { type: "base64", media_type: input.image.mediaType as "image/jpeg", data: input.image.data },
+    });
+  }
+  const text = input.text?.trim();
+  contentBlocks.push({ type: "text", text: text || (input.image ? "Here's a photo of the receipt." : "") });
+
+  const messages: MessageParam[] = [...history, { role: "user", content: contentBlocks }];
   let pdfReady = false;
 
   for (let iteration = 0; iteration < 5; iteration++) {
@@ -180,12 +233,12 @@ export async function runChat(userMessage: string, identity: Identity): Promise<
 
     const toolUseBlocks = response.content.filter((block) => block.type === "tool_use");
     if (toolUseBlocks.length === 0) {
-      const text = response.content
+      const replyText = response.content
         .filter((block): block is Extract<typeof block, { type: "text" }> => block.type === "text")
         .map((block) => block.text)
         .join("\n")
         .trim();
-      return { reply: text || "Done.", pdfReady };
+      return { reply: replyText || "Done.", pdfReady, history: trimHistory(messages) };
     }
 
     const toolResults: ToolResultBlockParam[] = [];
@@ -204,5 +257,9 @@ export async function runChat(userMessage: string, identity: Identity): Promise<
     messages.push({ role: "user", content: toolResults });
   }
 
-  return { reply: "Sorry, I got a bit stuck processing that -- could you try rephrasing?", pdfReady };
+  return {
+    reply: "Sorry, I got a bit stuck processing that -- could you try rephrasing?",
+    pdfReady,
+    history: trimHistory(messages),
+  };
 }
